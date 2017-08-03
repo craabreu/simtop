@@ -3,7 +3,7 @@ CC = g++
 BASIOPTS = -march=native -m64 -cpp -fmax-errors=1
 
 # Warning-related options:
-BASIOPTS += -Wall -Wno-maybe-uninitialized -Wno-attributes
+BASIOPTS += -Wall -Wno-maybe-uninitialized -Wno-attributes -Wno-unused-result
 
 # Option FAST (default):
 FAST_OPTS = -Ofast
@@ -21,12 +21,11 @@ endif
 SRCDIR = ./src
 OBJDIR = $(SRCDIR)/obj
 BINDIR = ./bin
-EMDDIR = ../EmDee/lib
+TSTDIR = ./test
 
-LIBS = -lm
-EMDEELIB = -L$(EMDDIR) -lemdee
+LIBS = -lemdee -lm
 
-.PHONY: all clean
+.PHONY: all clean test
 
 .DEFAULT_GOAL := all
 
@@ -36,6 +35,9 @@ all: $(BINDIR)/simtop
 
 clean:
 	rm -rf $(OBJDIR) $(BINDIR) *.gcda *.gcno
+
+test: $(BINDIR)/simtop
+	$(BINDIR)/simtop $(TSTDIR)/tip3p_sample.inp
 
 $(BINDIR)/simtop: $(OBJDIR)/simtop.o $(OBJDIR)/tops.o
 	mkdir -p $(BINDIR)
