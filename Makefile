@@ -37,7 +37,7 @@ clean:
 	rm -rf $(OBJDIR) $(BINDIR) *.gcda *.gcno
 
 test: $(BINDIR)/simtop
-	$(BINDIR)/simtop $(TSTDIR)/tip3p_sample.inp
+	$(BINDIR)/simtop $(TSTDIR)/tip3p_sample
 
 $(BINDIR)/simtop: $(OBJDIR)/simtop.o $(OBJDIR)/tops.o
 	mkdir -p $(BINDIR)

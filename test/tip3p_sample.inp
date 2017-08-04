@@ -8,6 +8,8 @@
 10.0
 [Skin for neighbor lists]
 2.0
+[Skin for potential smoothing]
+0.5
 [Seed for random number generation]
 86245
 [Number of integration steps]
@@ -24,6 +26,8 @@
 8.3144621455E-7      Da*A²/(fs²*K)
 [Coulomb's constant]
 0.13893545755135628  Da*A³/(fs*e)²
+[Electrostatic damping parameter]
+0.29                 1/A
 [Center of mass position + Quaternion]
    10.070686250219847       -2.7967522853075835        8.5710015219462239       0.56989745333821706       0.79266618748624118      -0.19265444484535074        9.8901328484361353E-002
   -5.3935849221278467        15.928558997622615       -24.100094728697940      -0.29155564664073919      -0.72053922107611190      -0.44204172610294878      -0.44768029684905247     

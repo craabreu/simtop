@@ -38,8 +38,12 @@
 #include <fstream>
 #include <cstdlib>
 #include <cmath>
+#include <string.h>
 #include "tops.h"
 #include "emdee.h"
+
+#define TRUE (_Bool)1
+#define FALSE (_Bool)0
 
 using namespace std; 
 
@@ -52,15 +56,14 @@ double rnd()
 // The Molecule structure contains the properties of one molecule.
 struct Molecule 
 {
-  Vector q; // the position 
-  Vector p; // the momentum 
-  Matrix A; // the attitude 
-  Vector L; // the angular momentum 
-  Vector F; // the force 
-  Vector t; // the torque 
-  double V; // the potential energy 
+  Vector r;  // the position 
+  Vector p;  // the momentum 
+  Matrix A;  // the attitude 
+  Matrix At; // the attitude transpose
+  Vector L;  // the angular momentum 
+  Vector F;  // the force 
+  Vector t;  // the torque 
 };
-
 
 Matrix quat_to_mat(double quat[4])
 {
@@ -74,34 +77,29 @@ Matrix quat_to_mat(double quat[4])
   double twoiw = 2.0*quat[1]*quat[0];
   double twojw = 2.0*quat[2]*quat[0];
   double twokw = 2.0*quat[3]*quat[0];
-
-  Matrix mat;
-
-  mat.xx = w2+i2-j2-k2;
-  mat.xy = twoij-twokw;
-  mat.xz = twojw+twoik;
-
-  mat.yx = twoij+twokw;
-  mat.yy = w2-i2+j2-k2;
-  mat.yz = twojk-twoiw;
-
-  mat.zx = twoik-twojw;
-  mat.zy = twojk+twoiw;
-  mat.zz = w2-i2-j2+k2;
-
-  return mat;
+  return Matrix(w2+i2-j2-k2, twoij-twokw, twojw+twoik,
+                twoij+twokw, w2-i2+j2-k2, twojk-twoiw,
+                twoik-twojw, twojk+twoiw, w2-i2-j2+k2);
 }
 
+double cbox( double r, double L )
+{
+  return r - L*floor(r/L);
+}
+
+//==================================================================================================
 
 // The System class contains all the molecules and the methods to
 // initialize and perform the simulation.
 class System 
 {
  public:
+  char *base;     // Base for file names
   int N;          // Number of molecules
   double L;       // Simulation box side length
   double Rc;      // Cutoff distance
   double Rs;      // Neighbor list skin
+  double smooth;  // Skin for potential smoothing
   double Temp;    // Temperature
   int seed;       // Seed for random numbers
   int Nsteps;     // Number of steps
@@ -111,125 +109,38 @@ class System
   double Pconv;   // Pressure convertion factor
   double kB;      // Boltzmann's constant
   double kCoul;   // Coulomb's constant
+  double alpha;   // Electrostatic damping parameter
 
   tEmDee md;      // EmDee system
 
-  static const int nSites = 3;      // the number of sites in each molecule
-  static const int nTypes = 2;      // the number of site types
-  static const Vector site[nSites]; // the sites in the molecule
-  static const int type[nSites];    // the type of each site
+  static const int    nSites = 3;       // the number of sites in each molecule
+  static const int    nTypes = 2;       // the number of site types
 
  private:
-  static const Vector I;            // the moments of inertia of a molecule
-  static const double m;            // the mass of a molecule
+  static const Vector site[nSites];     // the sites in the molecule
+  static const int    type[nSites];     // the type of each site
+  static const char   element[nSites];  // the chemical element at each site
+  static const double charge[nSites];   // the chemical element at each site
+
+  static const double mass[nTypes];     // the mass of each site
   static const double epsilon[nTypes];
   static const double sigma[nTypes];
-  static double cubic[4];           // the interpolation coefficients
+
+  static const Vector I;            // the moments of inertia of a molecule
+  static const double m;            // the mass of a molecule
   static TopRecur top;              // see tops.h and doctops.pdf
+
+  double Epot;
+
+  FILE *xyz;
 
   double RUNTIME; // the runtime 
   Molecule*mol;   // the molecules 
 
   //------------------------------------------------------------------------------------------------
-  // To pre-compute interpolation coefficients.
-  static const double RCA  = 2.5;
-  static const double RCB  = 4;
-  static const double RCA2 = 6.25;
-  static const double RCB2 = 16;
-  void computeCubicCoefficients() {
-    double ir2 = 1.0/(double)RCA2;
-    double ir6 = ir2*ir2*ir2;
-    double V   = ir6*(4*ir6-4);
-    double F   = ir6*(48*ir6-24)/RCA;
-    double a   = RCB-RCA;
-    double b   = 3*V-a*F;
-    double c   = -(2*V-a*F);
-    double ia2 = 1/(a*a);
-    double ia3 = ia2/a;
-    cubic[0] = b*RCB2*ia2+c*RCB*RCB2*ia3;
-    cubic[1] = -2*b*RCB*ia2-3*c*RCB2*ia3;
-    cubic[2] = b*ia2+3*c*RCB*ia3;
-    cubic[3] = -c*ia3;
-  }
-
-  //------------------------------------------------------------------------------------------------
-  // To compute the site-site potential with a smooth cut-off.
-  // For r < RCA, full Lennard-Jones is used;
-  // for r > RCB, the potential and force are both zero;
-  // for RCA < r < RCB, an interpolating cubic is used.
-  void siteForce(const Vector&r, Vector&f, double&V) const {
-    double r2 = r.nrm2();
-    if (r2>RCB2) { 
-      V = 0.0; 
-      f.zero(); 
-    } else if (r2>RCA2) { 
-      // smooth interpolation 
-      double rnrm = sqrt(r2);
-      V = cubic[0]+rnrm*cubic[1]+r2*(cubic[2]+rnrm*cubic[3]);
-      f = -(cubic[1]/rnrm+2*cubic[2]+3*rnrm*cubic[3])*r;
-    } else { 
-      double ir2 = 1/r2;
-      double ir6 = ir2*ir2*ir2;
-      V = ir6*(4*ir6-4);
-      f = ir6*ir2*(48*ir6-24)*r;
-    } 
-  }
-
-  //------------------------------------------------------------------------------------------------
-  // To compute the force F and torque t on molecule B due to A.
-  void molForce(const Molecule&A, const Molecule&B, const Vector&r,
-                 Vector&F, Vector&t, double&V) const {
-     V = 0;          
-     F.zero();
-     t.zero();   
-     for (int a=0; a<nSites; a++) 
-       for (int b=0; b<nSites; b++) { 
-         Vector ra  = Transpose(A.A)*site[a];
-         Vector rb  = Transpose(B.A)*site[b];
-         Vector rba = r+rb-ra;
-         Vector fba;
-         double vba;
-         siteForce(rba, fba, vba);         
-         V += vba;
-         F += fba;
-         t += rb^fba;
-      }
-  }
-
-  //------------------------------------------------------------------------------------------------
-  // To compute the forces between the parts of all molecules.
-  void computeForces() {
-    for (int i=0; i<N; i++){
-      mol[i].F.zero();
-      mol[i].t.zero();
-      mol[i].V = 0;
-    }    
-    for (int i=0; i<N; i++) 
-      for (int j=0; j<i; j++) {
-        Vector r=mol[j].q-mol[i].q;  	
-          // apply periodic boundary conditions 
-          r.x -= L*rint(r.x/L);
-          r.y -= L*rint(r.y/L);
-          r.z -= L*rint(r.z/L);
-          // compute force and torque on j due to i 
-          double V;    
-          Vector F;
-          Vector t;
-          molForce(mol[i], mol[j], r, F, t, V);            
-          // add to total forces and torques
-          mol[j].F += F;
-          mol[i].F -= F;
-          mol[j].t += t;
-          // torque on i is -torque on j, - r x Fj: 
-          mol[i].t -= t+(r^F); 
-          mol[i].V += 0.5*V;
-          mol[j].V += 0.5*V;
-        }
-  }
-
-  //------------------------------------------------------------------------------------------------
   // To take a single time-step 
   void timeStep() {
+    md.Energy.Compute = TRUE;
     // force propagatation by half a step 
     for (int i=0; i<N; i++) {
       mol[i].p += 0.5*Dt*mol[i].F;
@@ -237,15 +148,16 @@ class System
     }
     // free propagation by a full step 
     for (int i=0; i<N; i++ ) {
-      mol[i].q += Dt*mol[i].p/m;
+      mol[i].r += Dt*mol[i].p/m;
       Vector omega = mol[i].A*mol[i].L; 
       omega.x /= I.x;
       omega.y /= I.y; 
       omega.z /= I.z; 
-      top.Propagation(Dt, omega, mol[i].A); 
+      top.Propagation(Dt, omega, mol[i].A);
+      mol[i].At = Transpose(mol[i].A);
     }
     // recompute forces 
-    computeForces();
+    compute();
     // force propagatation by another half step 
     for (int i=0; i<N; i++) {
       mol[i].p += 0.5*Dt*mol[i].F;
@@ -258,14 +170,41 @@ class System
   void report(double t) const {
     double Elin = 0;
     double Erot = 0;
-    double Epot = 0;
     for (int i=0; i<N; i++) {
       Vector Lb = mol[i].A*mol[i].L;
-      Epot += mol[i].V;
       Elin += 0.5*mol[i].p.nrm2()/m;
       Erot += 0.5*(Lb.x*Lb.x/I.x+Lb.y*Lb.y/I.y+Lb.z*Lb.z/I.z);
     }
-    cout<<t<<' '<<Elin+Erot+Epot<<' '<<Elin<<' '<<Erot<<' '<<Epot<<'\n';
+    cout<<t<<' '<<mvv2e*(Elin+Erot+Epot)<<' '<<mvv2e*Elin<<' '<<mvv2e*Erot<<' '<<mvv2e*Epot<<'\n';
+  }
+
+  //------------------------------------------------------------------------------------------------
+  // To compute forces and torques.
+  void compute() {
+    int natoms = N*nSites;
+    double R[natoms][3], F[natoms][3];
+    for (int i = 0; i < N; i++) {
+      for (int j = 0; j < nSites; j++) {
+        int k = nSites*i + j;
+        Vector r = mol[i].r + mol[i].At*site[j];
+        R[k][0] = r.x;
+        R[k][1] = r.y;
+        R[k][2] = r.z;
+      }
+    }
+    EmDee_upload( &md, (char*)"coordinates", &R[0][0] );
+    Epot = md.Energy.Potential;
+    EmDee_download( md, (char*)"forces", &F[0][0] );
+    for (int i = 0; i < N; i++) {
+      mol[i].F.zero();
+      mol[i].t.zero();
+      for (int j = 0; j < nSites; j++) {
+        int k = i*nSites + j;
+        Vector f = Vector(F[k][0],F[k][1],F[k][2]);
+        mol[i].F += f;
+        mol[i].t += (mol[i].At*site[j])^f;
+      }
+    }
   }
 
  public:
@@ -276,88 +215,150 @@ class System
     mol = 0;
     // cause accurate output
     cout<<setprecision(14);   
-    // precompute coefficients
-    computeCubicCoefficients(); 
   }
 
+  //------------------------------------------------------------------------------------------------
   // To deconstruct the system.
   ~System() {
     // release memory
     delete[] mol;
+    fclose(xyz);
   }
 
+  //------------------------------------------------------------------------------------------------
   // To initialize the system.
-  void initialize(const char*filename, int threads) {
-    FILE *file;
-    file = fopen(filename,"r");
+  void initialize(string filebase, int threads) {
+    string name = filebase + ".inp";
+    FILE *file = fopen(name.c_str(),"r");
+    if (!file) {
+      cerr << "Error: file " << filebase << ".inp not found\n";
+      exit(1);
+    }
+    char line[256];
     #define readline \
       if (!fgets(line, sizeof(line), file)) { \
         cerr << "ERROR: could not read data.\n"; \
         exit(0); \
       }
-    char line[256];
-    if (file) {
-      readline; readline; sscanf( line, "%d",  &N );
-      readline; readline; sscanf( line, "%lf", &L );
-      readline; readline; sscanf( line, "%lf", &Dt );
-      readline; readline; sscanf( line, "%lf", &Rc );
-      readline; readline; sscanf( line, "%lf", &Rs );
-      readline; readline; sscanf( line, "%d",  &seed );
-      readline; readline; sscanf( line, "%d",  &Nsteps );
-      readline; readline; sscanf( line, "%d",  &Nprop );
-      readline; readline; sscanf( line, "%lf", &Temp );
-      readline; readline; sscanf( line, "%lf", &mvv2e );
-      readline; readline; sscanf( line, "%lf", &Pconv );
-      readline; readline; sscanf( line, "%lf", &kB );
-      readline; readline; sscanf( line, "%lf", &kCoul );
-      mol = new Molecule[N];
-      readline;
-      for (int i = 0; i < N; i++) {
-        double quat[4];
-        readline; sscanf( line, "%lf %lf %lf %lf %lf %lf %lf", 
-                                &mol[i].q.x, &mol[i].q.y, &mol[i].q.z,
-                                &quat[0], &quat[1], &quat[2], &quat[3] );
-        mol[i].A = quat_to_mat(quat);
+    readline; readline; sscanf( line, "%d",  &N );
+    readline; readline; sscanf( line, "%lf", &L );
+    readline; readline; sscanf( line, "%lf", &Dt );
+    readline; readline; sscanf( line, "%lf", &Rc );
+    readline; readline; sscanf( line, "%lf", &Rs );
+    readline; readline; sscanf( line, "%lf", &smooth );
+    readline; readline; sscanf( line, "%d",  &seed );
+    readline; readline; sscanf( line, "%d",  &Nsteps );
+    readline; readline; sscanf( line, "%d",  &Nprop );
+    readline; readline; sscanf( line, "%lf", &Temp );
+    readline; readline; sscanf( line, "%lf", &mvv2e );
+    readline; readline; sscanf( line, "%lf", &Pconv );
+    readline; readline; sscanf( line, "%lf", &kB );
+    readline; readline; sscanf( line, "%lf", &kCoul );
+    readline; readline; sscanf( line, "%lf", &alpha );
+    readline;
+    mol = new Molecule[N];
+    int natoms = N*nSites;
+    int body[natoms], atom_type[natoms];
+    double Q[natoms];
+    for (int i = 0; i < N; i++) {
+      double r[3], q[4];
+      readline; sscanf( line, "%lf %lf %lf %lf %lf %lf %lf",
+                        &r[0], &r[1], &r[2], &q[0], &q[1], &q[2], &q[3] );
+      double qnorm = 0.0;
+      for (int j = 0; j < 4; j++) qnorm += q[j]*q[j];
+      mol[i].r = Vector(cbox(r[0],L),cbox(r[1],L),cbox(r[2],L));
+      mol[i].A = quat_to_mat(q);
+      mol[i].At = Transpose(mol[i].A);
+      for (int j = 0; j < nSites; j++) {
+        int k = nSites*i + j;
+        body[k] = i+1;
+        atom_type[k] = type[j];
+        Q[k] = charge[j];
       }
     }
     #undef readline
-    RUNTIME = Nsteps*Dt;
+    name = filebase + ".xyz";
+    xyz = fopen(name.c_str(),"w");
 
-    int natoms = N*nSites;
-    int body[natoms], atom_type[natoms];
-    for (int i = 0; i < N; i++)
+    // Initialize EmDee system:
+    md = EmDee_system( threads, 1, Rc, Rs, natoms, &atom_type[0], (double*)&mass[0], &body[0] );
+    md.Options.AutoForceCompute = TRUE;
+    md.Options.AutoBodyUpdate = FALSE;
+
+    for (int i = 0; i < nTypes; i++) {
+      void *pair;
+      if (epsilon[i] == 0.0)
+        pair = EmDee_pair_none();
+      else
+        pair = EmDee_smoothed( EmDee_pair_lj_cut( epsilon[i]/mvv2e, sigma[i] ), Rc-smooth );
+      EmDee_set_pair_model( md, i+1, i+1, pair, kCoul );
+    }
+    EmDee_set_coul_model( md, EmDee_coul_damped_smoothed( alpha, smooth ) );
+    EmDee_upload( &md, (char*)"charges", &Q[0] );
+    EmDee_upload( &md, (char*)"box", &L );
+    compute();
+    EmDee_random_momenta( &md, kB*Temp, TRUE, seed );
+    double p[natoms][3];
+    EmDee_download( md, (char*)"momenta", &p[0][0] );
+    for (int i = 0; i < N; i++) {
+      mol[i].p.zero();
+      mol[i].L.zero();
+      Matrix At = Transpose(mol[i].A);
       for (int j = 0; j < nSites; j++) {
-        body[nSites*i + j] = i+1;
-        atom_type[nSites*i + j] = type[j];
+        int k = i*nSites + j;
+        mol[i].p += Vector(p[k][0],p[k][1],p[k][2]);
+        mol[i].L += (At*site[j])^Vector(p[k][0],p[k][1],p[k][2]);
       }
-
-    md = EmDee_system( threads, 1, Rc, Rs, natoms, &atom_type[0], NULL, &body[0] );
+    }
   }
-  
+
+  //------------------------------------------------------------------------------------------------
+  // To write down an xyz file:
+  void write_xyz() {
+    fprintf(xyz,"%d\n\n",N*nSites);
+    for (int i = 0; i < N; i++) {
+      Vector Ri = mol[i].r;
+      Ri.x = cbox(Ri.x,L);
+      Ri.y = cbox(Ri.y,L);
+      Ri.z = cbox(Ri.z,L);
+      for (int j = 0; j < nSites; j++) {
+        Vector r = Ri + Transpose(mol[i].A)*site[j];
+        fprintf(xyz,"%c %f %f %f\n",element[j],r.x,r.y,r.z);
+      }
+    }
+  }
+
   //------------------------------------------------------------------------------------------------
   // To run the simulation while outputting.
   void run() {
     report(0);
-    for (double t=0; t<RUNTIME; t+=Dt) {
+    for (int step=0; step < Nsteps; step++) {
       timeStep();
-      report(t);
+      report(step*Dt);
     }
   }
 };
+
+//==================================================================================================
 
 // Define the system's parameters for TIP3P Water:
 const Vector System::site[nSites] = {Vector(-0.75695,-0.52031970, 0.0),  // A
                                      Vector( 0.00000, 0.06556274, 0.0),  // A
                                      Vector( 0.75695,-0.52031970, 0.0)}; // A
+
 const int    System::type[nSites] = {1,2,1};
-const double System::epsilon[nTypes] = {0.0};
-const double System::sigma[nTypes] = {0.0};
+const char   System::element[nSites] = {'H','O','H'};
+const double System::charge[nSites] = {0.417,-0.834,0.417};
+
+const double System::mass[nTypes] =    {1.008, 15.9994};  // Da
+const double System::epsilon[nTypes] = {  0.0,  0.1520};  // kcal/mol
+const double System::sigma[nTypes] =   {  0.0,  3.1507};  // A
+
 const Vector System::I(0.61457,1.15511,1.76968); // Da.A^2
 const double System::m  = 18.0154; // Da
 TopRecur System::top(System::I.x,System::I.y,System::I.z);
-double System::cubic[4];
 
-
+//--------------------------------------------------------------------------------------------------
 // Main function called at start up.
 
 int main(int argc, char**argv) 
@@ -365,21 +366,16 @@ int main(int argc, char**argv)
   System system;                  // the system object
 
   if (argc == 2)
-    system.initialize(argv[1],1);
+    system.initialize((string)argv[1],1);
   else if (argc == 3)
-    system.initialize(argv[2],atoi(argv[1]));
+    system.initialize((string)argv[2],atoi(argv[1]));
   else {
-    cerr<<"Usage: simtop [nthreads] filename\n";
+    cerr<<"Usage: simtop [nthreads] filebase\n";
     exit(1);
   }
 
-
-//  char def_ini[] = "simtop.ini";  // the default <inifile>'s name
-
-//  // initialize
-//  if (argc>1) system.initialize(argv[1]);
-//      else    system.initialize(def_ini);
+  system.write_xyz();
 
   // run the simulation
-//  system.run();
+  system.run();
 }
