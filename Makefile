@@ -1,3 +1,5 @@
+NTHREADS = 4
+
 # Compiler and its basic options:
 CC = g++
 BASIOPTS = -march=native -m64 -cpp -fmax-errors=1
@@ -37,7 +39,7 @@ clean:
 	rm -rf $(OBJDIR) $(BINDIR) *.gcda *.gcno
 
 test: $(BINDIR)/simtop
-	$(BINDIR)/simtop $(TSTDIR)/tip3p_sample
+	$(BINDIR)/simtop $(NTHREADS) $(TSTDIR)/tip3p_sample
 
 $(BINDIR)/simtop: $(OBJDIR)/simtop.o $(OBJDIR)/tops.o
 	mkdir -p $(BINDIR)

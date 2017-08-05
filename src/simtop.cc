@@ -42,16 +42,11 @@
 #include "tops.h"
 #include "emdee.h"
 
-#define TRUE (_Bool)1
+#define TRUE  (_Bool)1
 #define FALSE (_Bool)0
+#define TOP   TopRecur
 
 using namespace std; 
-
-// To obtain a random number between 0 and 1
-double rnd() 
-{
-  return rand()/(double)RAND_MAX; 
-}
 
 // The Molecule structure contains the properties of one molecule.
 struct Molecule 
@@ -82,9 +77,11 @@ Matrix quat_to_mat(double quat[4])
                 twoik-twojw, twojk+twoiw, w2-i2-j2+k2);
 }
 
-double cbox( double r, double L )
+Vector cbox( Vector r, double L )
 {
-  return r - L*floor(r/L);
+  return Vector(r.x - L*floor(r.x/L), 
+                r.y - L*floor(r.y/L),
+                r.z - L*floor(r.z/L));
 }
 
 //==================================================================================================
@@ -94,17 +91,17 @@ double cbox( double r, double L )
 class System 
 {
  public:
-  char *base;     // Base for file names
-  int N;          // Number of molecules
+  int    N;       // Number of molecules
   double L;       // Simulation box side length
   double Rc;      // Cutoff distance
   double Rs;      // Neighbor list skin
   double smooth;  // Skin for potential smoothing
   double Temp;    // Temperature
-  int seed;       // Seed for random numbers
-  int Nsteps;     // Number of steps
+  int    seed;    // Seed for random numbers
+  int    Nsteps;  // Number of steps
   double Dt;      // Integration time step
-  int Nprop;      // Interval for printing properties
+  int    Nprop;   // Interval for printing properties
+  int    Nxyz;    // Interval for printing properties
   double mvv2e;   // Energy convertion factor
   double Pconv;   // Pressure convertion factor
   double kB;      // Boltzmann's constant
@@ -128,7 +125,7 @@ class System
 
   static const Vector I;            // the moments of inertia of a molecule
   static const double m;            // the mass of a molecule
-  static TopRecur top;              // see tops.h and doctops.pdf
+  static TOP   top;                 // see tops.h and doctops.pdf
 
   double Epot;
 
@@ -140,12 +137,12 @@ class System
   //------------------------------------------------------------------------------------------------
   // To take a single time-step 
   void timeStep() {
-    md.Energy.Compute = TRUE;
     // force propagatation by half a step 
     for (int i=0; i<N; i++) {
       mol[i].p += 0.5*Dt*mol[i].F;
       mol[i].L += 0.5*Dt*mol[i].t;
     }
+
     // free propagation by a full step 
     for (int i=0; i<N; i++ ) {
       mol[i].r += Dt*mol[i].p/m;
@@ -156,8 +153,10 @@ class System
       top.Propagation(Dt, omega, mol[i].A);
       mol[i].At = Transpose(mol[i].A);
     }
+
     // recompute forces 
     compute();
+
     // force propagatation by another half step 
     for (int i=0; i<N; i++) {
       mol[i].p += 0.5*Dt*mol[i].F;
@@ -238,7 +237,7 @@ class System
     #define readline \
       if (!fgets(line, sizeof(line), file)) { \
         cerr << "ERROR: could not read data.\n"; \
-        exit(0); \
+        exit(1); \
       }
     readline; readline; sscanf( line, "%d",  &N );
     readline; readline; sscanf( line, "%lf", &L );
@@ -249,6 +248,7 @@ class System
     readline; readline; sscanf( line, "%d",  &seed );
     readline; readline; sscanf( line, "%d",  &Nsteps );
     readline; readline; sscanf( line, "%d",  &Nprop );
+    readline; readline; sscanf( line, "%d",  &Nxyz );
     readline; readline; sscanf( line, "%lf", &Temp );
     readline; readline; sscanf( line, "%lf", &mvv2e );
     readline; readline; sscanf( line, "%lf", &Pconv );
@@ -261,12 +261,11 @@ class System
     int body[natoms], atom_type[natoms];
     double Q[natoms];
     for (int i = 0; i < N; i++) {
-      double r[3], q[4];
+      Vector r;
+      double q[4];
       readline; sscanf( line, "%lf %lf %lf %lf %lf %lf %lf",
-                        &r[0], &r[1], &r[2], &q[0], &q[1], &q[2], &q[3] );
-      double qnorm = 0.0;
-      for (int j = 0; j < 4; j++) qnorm += q[j]*q[j];
-      mol[i].r = Vector(cbox(r[0],L),cbox(r[1],L),cbox(r[2],L));
+                        &r.x, &r.y, &r.z, &q[0], &q[1], &q[2], &q[3] );
+      mol[i].r = cbox(r,L);
       mol[i].A = quat_to_mat(q);
       mol[i].At = Transpose(mol[i].A);
       for (int j = 0; j < nSites; j++) {
@@ -282,9 +281,7 @@ class System
 
     // Initialize EmDee system:
     md = EmDee_system( threads, 1, Rc, Rs, natoms, &atom_type[0], (double*)&mass[0], &body[0] );
-    md.Options.AutoForceCompute = TRUE;
     md.Options.AutoBodyUpdate = FALSE;
-
     for (int i = 0; i < nTypes; i++) {
       void *pair;
       if (epsilon[i] == 0.0)
@@ -317,12 +314,9 @@ class System
   void write_xyz() {
     fprintf(xyz,"%d\n\n",N*nSites);
     for (int i = 0; i < N; i++) {
-      Vector Ri = mol[i].r;
-      Ri.x = cbox(Ri.x,L);
-      Ri.y = cbox(Ri.y,L);
-      Ri.z = cbox(Ri.z,L);
+      Vector Ri = cbox(mol[i].r,L);
       for (int j = 0; j < nSites; j++) {
-        Vector r = Ri + Transpose(mol[i].A)*site[j];
+        Vector r = Ri + mol[i].At*site[j];
         fprintf(xyz,"%c %f %f %f\n",element[j],r.x,r.y,r.z);
       }
     }
@@ -332,9 +326,12 @@ class System
   // To run the simulation while outputting.
   void run() {
     report(0);
-    for (int step=0; step < Nsteps; step++) {
+    write_xyz();
+    for (int step=1; step <= Nsteps; step++) {
+      md.Energy.Compute = (_Bool)(step % Nprop == 0);
       timeStep();
-      report(step*Dt);
+      if (md.Energy.Compute) report(step*Dt);
+      if (step % Nxyz == 0) write_xyz();
     }
   }
 };
@@ -346,17 +343,18 @@ const Vector System::site[nSites] = {Vector(-0.75695,-0.52031970, 0.0),  // A
                                      Vector( 0.00000, 0.06556274, 0.0),  // A
                                      Vector( 0.75695,-0.52031970, 0.0)}; // A
 
-const int    System::type[nSites] = {1,2,1};
-const char   System::element[nSites] = {'H','O','H'};
-const double System::charge[nSites] = {0.417,-0.834,0.417};
-
 const double System::mass[nTypes] =    {1.008, 15.9994};  // Da
 const double System::epsilon[nTypes] = {  0.0,  0.1520};  // kcal/mol
 const double System::sigma[nTypes] =   {  0.0,  3.1507};  // A
 
-const Vector System::I(0.61457,1.15511,1.76968); // Da.A^2
-const double System::m  = 18.0154; // Da
-TopRecur System::top(System::I.x,System::I.y,System::I.z);
+const int    System::type[nSites]    = {   1 ,     2 ,    1 };
+const char   System::element[nSites] = {  'H',    'O',   'H'};
+const double System::charge[nSites]  = {0.417, -0.834, 0.417};
+
+const Vector System::I = Vector(0.61457,1.15511,1.76968); // Da.A^2
+const double System::m = 18.0154; // Da
+
+TOP System::top(System::I.x,System::I.y,System::I.z);
 
 //--------------------------------------------------------------------------------------------------
 // Main function called at start up.
@@ -373,8 +371,6 @@ int main(int argc, char**argv)
     cerr<<"Usage: simtop [nthreads] filebase\n";
     exit(1);
   }
-
-  system.write_xyz();
 
   // run the simulation
   system.run();
