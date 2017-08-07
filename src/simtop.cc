@@ -44,7 +44,7 @@
 
 #define TRUE  (_Bool)1
 #define FALSE (_Bool)0
-#define TOP   TopRecur
+#define TOP   TopAsymmetric // TopRecur
 
 using namespace std; 
 
@@ -72,9 +72,9 @@ Matrix quat_to_mat(double quat[4])
   double twoiw = 2.0*quat[1]*quat[0];
   double twojw = 2.0*quat[2]*quat[0];
   double twokw = 2.0*quat[3]*quat[0];
-  return Matrix(w2+i2-j2-k2, twoij-twokw, twojw+twoik,
-                twoij+twokw, w2-i2+j2-k2, twojk-twoiw,
-                twoik-twojw, twojk+twoiw, w2-i2-j2+k2);
+  return Matrix(w2+i2-j2-k2, twoij+twokw, twoik-twojw, 
+                twoij-twokw, w2-i2+j2-k2, twojk+twoiw,
+                twojw+twoik, twojk-twoiw, w2-i2-j2+k2);
 }
 
 Vector cbox( Vector r, double L )
@@ -174,7 +174,22 @@ class System
       Elin += 0.5*mol[i].p.nrm2()/m;
       Erot += 0.5*(Lb.x*Lb.x/I.x+Lb.y*Lb.y/I.y+Lb.z*Lb.z/I.z);
     }
-    cout<<t<<' '<<mvv2e*(Elin+Erot+Epot)<<' '<<mvv2e*Elin<<' '<<mvv2e*Erot<<' '<<mvv2e*Epot<<'\n';
+
+    double Volume = L*L*L;
+    double Ekin = Elin + Erot;
+    double Etotal = md.Energy.Potential + Ekin;
+    cout << t << ' '
+         << 2.0*Ekin/((6*N - 3)*kB) << ' '
+         << mvv2e*Ekin << ' '
+         << mvv2e*Elin << ' '
+         << mvv2e*Erot << ' '
+         << mvv2e*md.Energy.Potential << ' '
+         << mvv2e*md.Energy.Dispersion << ' '
+         << mvv2e*md.Energy.Coulomb << ' '
+         << mvv2e*Etotal << ' '
+         << mvv2e*md.Virial << ' '
+         << mvv2e*md.BodyVirial << ' '
+         << Pconv*((N-1)*kB*Temp + (1.0/3.0)*md.Virial)/Volume << '\n';
   }
 
   //------------------------------------------------------------------------------------------------
@@ -234,6 +249,7 @@ class System
       exit(1);
     }
     char line[256];
+    double t_run, t_prop, t_xyz;
     #define readline \
       if (!fgets(line, sizeof(line), file)) { \
         cerr << "ERROR: could not read data.\n"; \
@@ -246,9 +262,9 @@ class System
     readline; readline; sscanf( line, "%lf", &Rs );
     readline; readline; sscanf( line, "%lf", &smooth );
     readline; readline; sscanf( line, "%d",  &seed );
-    readline; readline; sscanf( line, "%d",  &Nsteps );
-    readline; readline; sscanf( line, "%d",  &Nprop );
-    readline; readline; sscanf( line, "%d",  &Nxyz );
+    readline; readline; sscanf( line, "%lf", &t_run);
+    readline; readline; sscanf( line, "%lf", &t_prop );
+    readline; readline; sscanf( line, "%lf", &t_xyz );
     readline; readline; sscanf( line, "%lf", &Temp );
     readline; readline; sscanf( line, "%lf", &mvv2e );
     readline; readline; sscanf( line, "%lf", &Pconv );
@@ -256,6 +272,9 @@ class System
     readline; readline; sscanf( line, "%lf", &kCoul );
     readline; readline; sscanf( line, "%lf", &alpha );
     readline;
+    Nsteps = round(t_run/Dt);
+    Nprop = round(t_prop/Dt);
+    Nxyz = round(t_xyz/Dt);
     mol = new Molecule[N];
     int natoms = N*nSites;
     int body[natoms], atom_type[natoms];
@@ -325,6 +344,8 @@ class System
   //------------------------------------------------------------------------------------------------
   // To run the simulation while outputting.
   void run() {
+    cout << "Step Temp KinEng KinEng_t KinEng_r PotEng DispEng "
+         << "CoulEng TotEng Virial BodyVirial Press\n";
     report(0);
     write_xyz();
     for (int step=1; step <= Nsteps; step++) {
@@ -339,12 +360,12 @@ class System
 //==================================================================================================
 
 // Define the system's parameters for TIP3P Water:
-const Vector System::site[nSites] = {Vector(-0.75695,-0.52031970, 0.0),  // A
+const Vector System::site[nSites] = {Vector( 0.75695,-0.52031970, 0.0),  // A
                                      Vector( 0.00000, 0.06556274, 0.0),  // A
-                                     Vector( 0.75695,-0.52031970, 0.0)}; // A
+                                     Vector(-0.75695,-0.52031970, 0.0)}; // A
 
 const double System::mass[nTypes] =    {1.008, 15.9994};  // Da
-const double System::epsilon[nTypes] = {  0.0,  0.1520};  // kcal/mol
+const double System::epsilon[nTypes] = {  0.0,  0.1521};  // kcal/mol
 const double System::sigma[nTypes] =   {  0.0,  3.1507};  // A
 
 const int    System::type[nSites]    = {   1 ,     2 ,    1 };
