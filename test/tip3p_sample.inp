@@ -12,12 +12,12 @@
 0.5 A
 [Seed for random number generation]
 86245
-[Totao integration time]
-1000 fs
+[Total integration time]
+6000000 fs
 [Time interval for property printing]
 60 fs
 [Time interval for configuration file dumping]
-100 fs
+60000 fs
 [Temperature]
 303.43 K
 [Energy conversion factor]
