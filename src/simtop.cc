@@ -1,36 +1,22 @@
 /*
   simtop.cc
  
-  Simulation of a fluid of molecules each consisting of four
-  Lennard-Jones sites.
+  Simulation of a TIP3P water molecules.
  
-  This program is meant for the purpose of illustrating the use of the
+  From the original author:
+
+  "This program is meant for the purpose of illustrating the use of the
   implementation of the exact rotation of a rigid body in the context
   of the symplectic integration scheme using the exact rotation
   matrix.  The calculations of the forces and the random number
   generator are therefore implemented only in the most straightforward
-  but computationally costly way.
+  but computationally costly way."
  
-  To compile type:
-    c++ simtop.cc tops.cc -lm -o simtop
-  
-  To run type:
-    simtop <inifile>
-
-  Input: The input file <inifile> should contain a list of numbers
-  which signify
- 
-     number of particles
-     linear size of the cubic simulation box
-     run-time of the simulation
-     integration step-size 
- 
-  Output: The program writes a line per time step containing five
-  columns representing time, total energy, translational kinetic
-  energy, rotational kinetic energy and potential energy. 
-
   Ramses van Zon
   Last modified: May 29, 2009
+
+  Adapted by: Charlles R. A. Abreu
+  Last modified: Aug 7, 2017
 */
 
 #include <iostream>
@@ -44,7 +30,9 @@
 
 #define TRUE  (_Bool)1
 #define FALSE (_Bool)0
-#define TOP   TopAsymmetric // TopRecur
+#ifndef TOP
+#define TOP   TopRecur
+#endif
 
 using namespace std; 
 
@@ -353,6 +341,12 @@ class System
       timeStep();
       if (md.Energy.Compute) report(step*Dt);
       if (step % Nxyz == 0) write_xyz();
+    }
+    if (Nsteps > 0) {
+      cout << "neighbor list builds = " << md.Builds << '\n';
+      cout << "pair time      = " << md.Time.Pair << " s.\n";
+      cout << "neighbor time  = " << md.Time.Neighbor << " s.\n";
+      cout << "execution time = " << md.Time.Total << " s.\n";
     }
   }
 };

@@ -1,4 +1,4 @@
-NTHREADS = 4
+NTHREADS = 2
 
 # Compiler and its basic options:
 CC = g++
